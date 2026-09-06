@@ -5,7 +5,6 @@
   buildNpmPackage,
   fetchFromGitHub,
   pkg-config,
-  makeWrapper,
   wrapGAppsHook4,
   imagemagick,
   desktop-file-utils,
@@ -111,6 +110,9 @@ buildGoModule (
       "-s"
       "-w"
       "-X main.version=${finalAttrs.version}"
+      # go-mpv dlopens libmpv in both the application and Go test executables.
+      "-linkmode=external"
+      "-extldflags=-Wl,-rpath,${lib.makeLibraryPath [ mpv ]}"
     ];
 
     subPackages = [ "." ];
@@ -126,17 +128,8 @@ buildGoModule (
     checkFlags = [
       "-tags=nocgo"
     ];
-    # go-mpv (nocgo/purego) dlopens libmpv at package init. Linux uses
-    # LD_LIBRARY_PATH; Darwin dyld ignores that and needs DYLD_LIBRARY_PATH.
-    preCheck = ''
-      export LD_LIBRARY_PATH="${lib.makeLibraryPath [ mpv ]}:''${LD_LIBRARY_PATH-}"
-      export DYLD_LIBRARY_PATH="${lib.makeLibraryPath [ mpv ]}:''${DYLD_LIBRARY_PATH-}"
-      export DYLD_FALLBACK_LIBRARY_PATH="${lib.makeLibraryPath [ mpv ]}:''${DYLD_FALLBACK_LIBRARY_PATH-}"
-    '';
-
     nativeBuildInputs = [
       pkg-config
-      makeWrapper
       removeReferencesTo
     ]
     ++ lib.optionals stdenv.hostPlatform.isLinux [
@@ -233,25 +226,18 @@ buildGoModule (
         </dict>
         </plist>
         PLIST
-        cp $out/bin/forte "$appDir/Contents/MacOS/forte-bin"
-        chmod +x "$appDir/Contents/MacOS/forte-bin"
-        makeWrapper "$appDir/Contents/MacOS/forte-bin" "$appDir/Contents/MacOS/forte" \
-          --prefix DYLD_LIBRARY_PATH : "${lib.makeLibraryPath [ mpv ]}"
-        rm -f $out/bin/forte || true
-        makeWrapper "$appDir/Contents/MacOS/forte" "$out/bin/forte" \
-          --prefix DYLD_LIBRARY_PATH : "${lib.makeLibraryPath [ mpv ]}"
+        mv $out/bin/forte "$appDir/Contents/MacOS/forte"
+        ln -s "$appDir/Contents/MacOS/forte" $out/bin/forte
       ''}
-    '';
-
-    preFixup = lib.optionalString stdenv.hostPlatform.isLinux ''
-      gappsWrapperArgs+=(
-        --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath [ mpv ]}"
-      )
     '';
 
     # modernc/sqlite and similar embed toolchain paths; nixpkgs forbids Go in $out.
     postFixup = ''
       find "$out" -type f -exec remove-references-to -t ${go} '{}' +
+    ''
+    + lib.optionalString stdenv.hostPlatform.isLinux ''
+      # RPATH shrinking removes libmpv because it is only loaded via dlopen.
+      patchelf --add-rpath "${lib.makeLibraryPath [ mpv ]}" "$out/bin/.forte-wrapped"
     '';
 
     nativeInstallCheckInputs = [ versionCheckHook ];
